@@ -27,29 +27,37 @@ def load_profile():
         return df.iloc[0] if not df.empty else None
     except: return None
 
-# 修改後的讀取函式 (含除錯功能)
 def load_logs():
     try:
-        # 強制讀取 Logs 分頁
+        # 讀取資料 (ttl=0 代表不快取，每次抓最新)
         df = conn.read(worksheet="Logs", ttl=0)
 
-        # --- 🕵️‍♂️ 偵探模式：檢查欄位 ---
-        # 如果找不到 Date，就在網頁上印出它到底讀到了什麼
+        # --- 🛠️ 強制修復 A, B, C, D 問題 ---
+        # 如果程式讀到的欄位是 A, B, C, D，代表它沒認出標題
+        if list(df.columns) == ['A', 'B', 'C', 'D']:
+            # 我們手動幫它改名
+            df.columns = ["Date", "Food", "Calories", "Protein"]
+
+            # 如果第一行內容剛好就是 "Date", "Food"... 代表那是標題列被當成資料了
+            # 我們把它刪掉
+            if not df.empty and str(df.iloc[0]["Date"]) == "Date":
+                df = df.iloc[1:]
+
+        # 再次檢查 (雙重保險)
         if 'Date' not in df.columns:
-            st.warning(f"⚠️ 欄位讀取異常！目前讀到的欄位名稱是：{df.columns.tolist()}")
+            # 如果還是找不到，回傳空表 (避免 App 崩潰)
+            return pd.DataFrame(columns=["Date", "Food", "Calories", "Protein"])
 
-            # 如果讀進來的表是全空的，就回傳一個標準的空表
-            if df.empty:
-                return pd.DataFrame(columns=["Date", "Food", "Calories", "Protein"])
+        # 格式化日期
+        if not df.empty:
+            df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
+            # 去除日期空白或錯誤的行
+            df = df.dropna(subset=['Date'])
 
-        # ---------------------------
-
-        if not df.empty and 'Date' in df.columns:
-            df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
         return df
     except Exception as e:
-        st.error(f"資料庫讀取失敗: {e}")
-        # 發生錯誤時，回傳標準空表，防止 App 崩潰
+        # 如果真的發生不可預期的錯誤，印出來方便除錯，但不讓 App 死掉
+        st.error(f"資料庫讀取微恙 (但不影響操作): {e}")
         return pd.DataFrame(columns=["Date", "Food", "Calories", "Protein"])
 
 def save_profile(data_dict):
