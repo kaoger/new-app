@@ -4,7 +4,7 @@ from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
 # --- 設定網頁 ---
-st.set_page_config(page_title="植感生活 Diary v3.2", page_icon="🌿", layout="centered")
+st.set_page_config(page_title="植感生活 Diary v3.3", page_icon="🌿", layout="centered")
 
 # --- CSS 美化 ---
 st.markdown("""
@@ -14,7 +14,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 st.markdown('<h1 class="main-header">🌿 植感生活 Diary</h1>', unsafe_allow_html=True)
-st.markdown('<p class="sub-header">雲端紀錄 | 歷史回顧版</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">雲端紀錄 | 懶人選單回歸版</p>', unsafe_allow_html=True)
 
 # =========================================
 #  0. 資料庫連線 (Google Sheets)
@@ -31,7 +31,6 @@ def load_logs():
     try:
         df = conn.read(worksheet="Logs", ttl=0)
         if not df.empty and 'Date' in df.columns:
-            # 確保日期格式統一為 YYYY-MM-DD
             df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
         return df
     except: return pd.DataFrame(columns=["Date", "Food", "Calories", "Protein"])
@@ -107,52 +106,88 @@ c2.metric("蛋白質", f"{int(current_prot)}g", f"目標 {int(prot_goal)}g")
 st.progress(min(current_cal / daily_target, 1.0) if daily_target > 0 else 0)
 
 # =========================================
-#  3. 飲食紀錄 (上傳 database)
+#  3. 飲食紀錄 (修正版：選單回歸！)
 # =========================================
 st.markdown("### 🍽️ 記一筆")
 with st.expander("➕ 新增飲食", expanded=True):
+    # 這裡就是把 V2.5 的選單邏輯加回來
+    food_options = {
+        "手動輸入": {"cal": 0, "prot": 0},
+        "無糖豆漿 (400ml)": {"cal": 135, "prot": 14},
+        "茶葉蛋 (1顆)": {"cal": 75, "prot": 7},
+        "素食便當 (一般)": {"cal": 700, "prot": 20},
+        "素食便當 (少油)": {"cal": 500, "prot": 18},
+        "燙青菜": {"cal": 50, "prot": 2},
+        "五穀飯 (一碗)": {"cal": 280, "prot": 5},
+        "水果 (一份)": {"cal": 60, "prot": 1},
+        "堅果 (一小把)": {"cal": 150, "prot": 4},
+    }
+
+    # 1. 先選種類
     f1, f2 = st.columns([2, 1])
-    with f1: food_name = st.text_input("食物名稱", placeholder="例如：地瓜球")
-    with f2:
+    with f1:
+        choice = st.selectbox("選擇食物", list(food_options.keys()))
+
+    # 2. 根據選擇顯示輸入框
+    custom_name = ""
+    add_cal = 0
+    add_prot = 0
+
+    if choice == "手動輸入":
+        custom_name = st.text_input("食物名稱", placeholder="例如：地瓜球")
+        # 手動時，讓輸入框並排
         in1, in2 = st.columns(2)
-        add_cal = in1.number_input("熱量", 0, 3000, 0)
-        add_prot = in2.number_input("蛋白", 0, 200, 0)
+        add_cal = in1.number_input("熱量 (kcal)", 0, 3000, 0)
+        add_prot = in2.number_input("蛋白質 (g)", 0, 200, 0)
+    else:
+        # 選單時，自動帶入數值
+        vals = food_options[choice]
+        in1, in2 = st.columns(2)
+        # 這裡設定 value=vals[...] 讓它自動填入
+        add_cal = in1.number_input("熱量 (kcal)", value=vals["cal"])
+        add_prot = in2.number_input("蛋白質 (g)", value=vals["prot"])
 
     if st.button("上傳雲端", use_container_width=True):
-        if food_name:
-            save_log(pd.DataFrame([{"Date": today_str, "Food": food_name, "Calories": add_cal, "Protein": add_prot}]))
-        else: st.warning("請輸入名稱")
+        # 決定最終要存的名字
+        final_name = custom_name if choice == "手動輸入" else choice
 
+        # 只有名字不為空才上傳
+        if final_name:
+            save_log(pd.DataFrame([{
+                "Date": today_str,
+                "Food": final_name,
+                "Calories": add_cal,
+                "Protein": add_prot
+            }]))
+        else:
+            st.warning("請輸入食物名稱")
+
+# 顯示今日清單
 if not today_data.empty:
     st.caption("今日明細：")
     st.dataframe(today_data[["Food", "Calories", "Protein"]], use_container_width=True, hide_index=True)
 
 # =========================================
-#  4. 📅 歷史紀錄查詢 (New!)
+#  4. 📅 歷史紀錄查詢
 # =========================================
 st.divider()
 st.markdown("### 📅 歷史時光機")
 
-# 日期選擇器
 col_date, col_info = st.columns([1, 2])
 with col_date:
     query_date = st.date_input("選擇日期查看", datetime.now())
     query_date_str = query_date.strftime('%Y-%m-%d')
 
-# 撈出那天的資料
 if not df_logs.empty:
     history_data = df_logs[df_logs['Date'] == query_date_str]
-
     with col_info:
         if not history_data.empty:
-            # 計算當日總結
             h_cal = history_data['Calories'].sum()
             h_prot = history_data['Protein'].sum()
             st.info(f"**{query_date_str} 總結**\n\n🔥 熱量：{h_cal} kcal　|　💪 蛋白質：{h_prot} g")
         else:
             st.warning(f"{query_date_str} 沒有紀錄喔！")
 
-    # 顯示詳細表格
     if not history_data.empty:
         st.dataframe(history_data[["Food", "Calories", "Protein"]], use_container_width=True, hide_index=True)
 else:
