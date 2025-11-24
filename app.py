@@ -77,4 +77,99 @@ with st.expander("⚙️ 個人檔案設定", expanded=False):
 
         tc1, tc2 = st.columns(2)
         t_weight = tc1.number_input("目標體重", 30.0, 200.0, float(defaults.get("TargetWeight", weight)))
-        t_days = tc2.number_input("預計天數", 7, 3
+        t_days = tc2.number_input("預計天數", 7, 365, int(defaults.get("TargetDays", 30)))
+
+        if st.form_submit_button("💾 更新個人檔案"):
+            save_profile({"Height": height, "Weight": weight, "Age": age, "Gender": gender, "DietType": diet_type, "BodyFat": body_fat, "Activity": activity, "TargetWeight": t_weight, "TargetDays": t_days})
+
+# 代謝計算
+lbm = weight * (1 - (body_fat / 100))
+bmr = 370 + (21.6 * lbm)
+tdee = bmr * {"久坐": 1.2, "輕度": 1.375, "中度": 1.55, "高度": 1.725}.get(activity[:2], 1.2)
+diff = weight - t_weight
+daily_target = tdee - ((diff * 7700) / t_days) if diff > 0 else tdee + ((abs(diff) * 7700) / t_days)
+prot_goal = weight * 1.5
+
+# =========================================
+#  2. 今日儀表板 (讀取 database)
+# =========================================
+today_str = datetime.now().strftime('%Y-%m-%d')
+today_data = df_logs[df_logs['Date'] == today_str] if not df_logs.empty else pd.DataFrame()
+current_cal = today_data['Calories'].sum() if not today_data.empty else 0
+current_prot = today_data['Protein'].sum() if not today_data.empty else 0
+
+st.divider()
+st.markdown(f"### 📊 今日概況 ({today_str})")
+remaining = daily_target - current_cal
+c1, c2 = st.columns(2)
+c1.metric("剩餘熱量", int(remaining), f"目標 {int(daily_target)}")
+c2.metric("蛋白質", f"{int(current_prot)}g", f"目標 {int(prot_goal)}g")
+st.progress(min(current_cal / daily_target, 1.0) if daily_target > 0 else 0)
+
+# =========================================
+#  3. 飲食紀錄 (上傳 database)
+# =========================================
+st.markdown("### 🍽️ 記一筆")
+with st.expander("➕ 新增飲食", expanded=True):
+    f1, f2 = st.columns([2, 1])
+    with f1: food_name = st.text_input("食物名稱", placeholder="例如：地瓜球")
+    with f2:
+        in1, in2 = st.columns(2)
+        add_cal = in1.number_input("熱量", 0, 3000, 0)
+        add_prot = in2.number_input("蛋白", 0, 200, 0)
+
+    if st.button("上傳雲端", use_container_width=True):
+        if food_name:
+            save_log(pd.DataFrame([{"Date": today_str, "Food": food_name, "Calories": add_cal, "Protein": add_prot}]))
+        else: st.warning("請輸入名稱")
+
+if not today_data.empty:
+    st.caption("今日明細：")
+    st.dataframe(today_data[["Food", "Calories", "Protein"]], use_container_width=True, hide_index=True)
+
+# =========================================
+#  4. 📅 歷史紀錄查詢 (New!)
+# =========================================
+st.divider()
+st.markdown("### 📅 歷史時光機")
+
+# 日期選擇器
+col_date, col_info = st.columns([1, 2])
+with col_date:
+    query_date = st.date_input("選擇日期查看", datetime.now())
+    query_date_str = query_date.strftime('%Y-%m-%d')
+
+# 撈出那天的資料
+if not df_logs.empty:
+    history_data = df_logs[df_logs['Date'] == query_date_str]
+
+    with col_info:
+        if not history_data.empty:
+            # 計算當日總結
+            h_cal = history_data['Calories'].sum()
+            h_prot = history_data['Protein'].sum()
+            st.info(f"**{query_date_str} 總結**\n\n🔥 熱量：{h_cal} kcal　|　💪 蛋白質：{h_prot} g")
+        else:
+            st.warning(f"{query_date_str} 沒有紀錄喔！")
+
+    # 顯示詳細表格
+    if not history_data.empty:
+        st.dataframe(history_data[["Food", "Calories", "Protein"]], use_container_width=True, hide_index=True)
+else:
+    st.write("資料庫目前是空的。")
+
+# =========================================
+#  5. 食譜推薦
+# =========================================
+st.divider()
+st.markdown(f"### 🥑 靈感廚房")
+rec_type = "輕盈低卡" if remaining < 400 else "營養均衡"
+rec_text = ""
+if diet_type == "全素 (Vegan)":
+    rec_text = "鷹嘴豆藜麥沙拉" if rec_type == "輕盈低卡" else "天貝炒時蔬定食"
+elif diet_type == "蛋奶素":
+    rec_text = "希臘優格水果杯" if rec_type == "輕盈低卡" else "起司蔬菜烘蛋"
+else:
+    rec_text = "超商地瓜+無糖豆漿" if rec_type == "輕盈低卡" else "潤餅(去糖粉)+茶葉蛋"
+
+st.success(f"💡 依據你的 **{diet_type}** 偏好，推薦晚餐嘗試：**{rec_text}** ({rec_type})")
