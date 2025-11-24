@@ -27,13 +27,30 @@ def load_profile():
         return df.iloc[0] if not df.empty else None
     except: return None
 
+# 修改後的讀取函式 (含除錯功能)
 def load_logs():
     try:
+        # 強制讀取 Logs 分頁
         df = conn.read(worksheet="Logs", ttl=0)
+
+        # --- 🕵️‍♂️ 偵探模式：檢查欄位 ---
+        # 如果找不到 Date，就在網頁上印出它到底讀到了什麼
+        if 'Date' not in df.columns:
+            st.warning(f"⚠️ 欄位讀取異常！目前讀到的欄位名稱是：{df.columns.tolist()}")
+
+            # 如果讀進來的表是全空的，就回傳一個標準的空表
+            if df.empty:
+                return pd.DataFrame(columns=["Date", "Food", "Calories", "Protein"])
+
+        # ---------------------------
+
         if not df.empty and 'Date' in df.columns:
             df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
         return df
-    except: return pd.DataFrame(columns=["Date", "Food", "Calories", "Protein"])
+    except Exception as e:
+        st.error(f"資料庫讀取失敗: {e}")
+        # 發生錯誤時，回傳標準空表，防止 App 崩潰
+        return pd.DataFrame(columns=["Date", "Food", "Calories", "Protein"])
 
 def save_profile(data_dict):
     df = pd.DataFrame([data_dict])
