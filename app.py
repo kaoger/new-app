@@ -4,7 +4,7 @@ from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
 # --- 設定網頁 ---
-st.set_page_config(page_title="植感生活 Diary v4.2", page_icon="🌿", layout="centered")
+st.set_page_config(page_title="植感生活 Diary v4.3", page_icon="🌿", layout="centered")
 
 # --- CSS 美化 ---
 st.markdown("""
@@ -14,23 +14,29 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 st.markdown('<h1 class="main-header">🌿 植感生活 Diary</h1>', unsafe_allow_html=True)
-st.markdown('<p class="sub-header">雲端紀錄 | 支援刪除功能版</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">雲端紀錄 | 流量優化版</p>', unsafe_allow_html=True)
 
 # =========================================
-#  0. 資料庫連線與邏輯
+#  0. 資料庫連線與邏輯 (加上快取機制)
 # =========================================
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+# ⭐️ 修改點 1: 加入 @st.cache_data(ttl=5)
+# 這代表 5 秒內重複呼叫這個函式，不會去連 Google，直接用記憶體的資料
+@st.cache_data(ttl=5)
 def load_all_profiles():
     try:
-        return conn.read(worksheet="Profile", ttl=0)
+        # 這裡 ttl 不需要設為 0 了，交給 st.cache_data 管理
+        return conn.read(worksheet="Profile")
     except:
         return pd.DataFrame(columns=["Name", "Height", "Weight", "Age", "Gender", "DietType", "BodyFat", "Activity", "TargetWeight", "TargetDays"])
 
+# ⭐️ 修改點 2: 加入 @st.cache_data(ttl=5)
+@st.cache_data(ttl=5)
 def load_all_logs():
     try:
-        df = conn.read(worksheet="Logs", ttl=0)
-        # 欄位除錯與修復
+        df = conn.read(worksheet="Logs")
+        # 欄位除錯
         if list(df.columns) == ['A', 'B', 'C', 'D', 'E']:
             df.columns = ["Name", "Date", "Food", "Calories", "Protein"]
             if not df.empty and str(df.iloc[0]["Name"]) == "Name": df = df.iloc[1:]
@@ -42,9 +48,13 @@ def load_all_logs():
     except:
         return pd.DataFrame(columns=["Name", "Date", "Food", "Calories", "Protein"])
 
+# 儲存 Profile
 def save_profile(user_name, data_dict):
     try:
-        df = load_all_profiles()
+        # 為了要寫入，我們還是要拿一次最新的 (不使用快取)
+        # 這裡用 conn.read(ttl=0) 確保拿到最新狀態以免覆蓋錯誤
+        df = conn.read(worksheet="Profile", ttl=0)
+
         data_dict["Name"] = user_name
         if user_name in df["Name"].values:
             idx = df[df["Name"] == user_name].index[0]
@@ -53,31 +63,41 @@ def save_profile(user_name, data_dict):
         else:
             new_row = pd.DataFrame([data_dict])
             df = pd.concat([df, new_row], ignore_index=True)
+
         conn.update(worksheet="Profile", data=df)
+
+        # ⭐️ 修改點 3: 寫入後，強制清除快取，這樣下次讀取才會是新的
+        load_all_profiles.clear()
         st.success(f"✅ {user_name} 的檔案已更新！")
         st.rerun()
     except Exception as e:
-        st.error(f"儲存失敗: {e}")
+        st.error(f"儲存失敗，請稍後再試: {e}")
 
+# 儲存 Log
 def save_log(user_name, log_dict):
     try:
-        df = load_all_logs()
+        df = conn.read(worksheet="Logs", ttl=0) # 寫入前讀取最新
         log_dict["Name"] = user_name
         new_row = pd.DataFrame([log_dict])
         df = pd.concat([df, new_row], ignore_index=True)
         conn.update(worksheet="Logs", data=df)
+
+        # ⭐️ 修改點 4: 清除快取
+        load_all_logs.clear()
         st.success("✅ 紀錄已上傳！")
         st.rerun()
     except Exception as e:
-        st.error(f"儲存失敗: {e}")
+        st.error(f"儲存失敗，請稍後再試: {e}")
 
-# --- 新增：刪除功能 ---
+# 刪除 Log
 def delete_logs(indices_to_delete):
     try:
-        df = load_all_logs()
-        # 根據 Index 刪除特定行
+        df = conn.read(worksheet="Logs", ttl=0) # 寫入前讀取最新
         df = df.drop(indices_to_delete)
         conn.update(worksheet="Logs", data=df)
+
+        # ⭐️ 修改點 5: 清除快取
+        load_all_logs.clear()
         st.success("✅ 已刪除選取項目！")
         st.rerun()
     except Exception as e:
@@ -93,7 +113,7 @@ if not user_name:
     st.warning("請先輸入暱稱才能開始使用喔！")
     st.stop()
 
-# 讀取資料
+# 讀取資料 (這裡會使用快取，大幅減少 API 呼叫)
 all_profiles = load_all_profiles()
 all_logs = load_all_logs()
 
@@ -156,11 +176,10 @@ c2.metric("蛋白質", f"{int(current_prot)}g", f"目標 {int(prot_goal)}g")
 st.progress(min(current_cal / daily_target, 1.0) if daily_target > 0 else 0)
 
 # =========================================
-#  4. 飲食紀錄 (新增 + 刪除)
+#  4. 飲食紀錄
 # =========================================
 st.markdown("### 🍽️ 飲食紀錄")
 
-# 4-1 新增區塊
 with st.expander("➕ 新增飲食", expanded=True):
     food_options = {
         "手動輸入": {"cal": 0, "prot": 0},
@@ -194,12 +213,10 @@ with st.expander("➕ 新增飲食", expanded=True):
             save_log(user_name, {"Date": today_str, "Food": final_name, "Calories": add_cal, "Protein": add_prot})
         else: st.warning("請輸入名稱")
 
-# 4-2 刪除管理區塊 (New!)
+# 刪除功能
 if not today_data.empty:
     with st.expander("🗑️ 管理/刪除今日紀錄", expanded=False):
         st.write("請勾選你想刪除的項目：")
-
-        # 找出要刪除的 Index
         delete_list = []
         for index, row in today_data.iterrows():
             label = f"{row['Food']} (熱量: {row['Calories']} / 蛋白: {row['Protein']})"
@@ -210,7 +227,6 @@ if not today_data.empty:
             if st.button(f"確認刪除選取的 {len(delete_list)} 筆資料", type="primary", use_container_width=True):
                 delete_logs(delete_list)
 
-    # 顯示今日明細表格
     st.caption("今日明細：")
     st.dataframe(today_data[["Food", "Calories", "Protein"]], use_container_width=True, hide_index=True)
 
@@ -228,50 +244,25 @@ if not user_logs.empty:
     else: st.warning("該日無紀錄")
 
 # =========================================
-#  6. 🥑 靈感廚房
+#  6. 靈感廚房
 # =========================================
 st.divider()
 st.markdown(f"### 🥑 靈感廚房 ({current_diet_type})")
 
 menus = {
     "全素 (Vegan)": {
-        "low": {
-            "早": {"n": "奇亞籽豆漿布丁", "d": "250 kcal", "r": "豆漿+奇亞籽放隔夜，早起加水果"},
-            "午": {"n": "鷹嘴豆藜麥沙拉", "d": "350 kcal", "r": "鷹嘴豆、藜麥、甜椒、小黃瓜、檸檬油醋醬"},
-            "晚": {"n": "味噌豆腐蔬菜湯", "d": "200 kcal", "r": "板豆腐、海帶芽、綜合菇類、味噌湯底"}
-        },
-        "high": {
-            "早": {"n": "酪梨全麥吐司", "d": "400 kcal", "r": "全麥吐司、酪梨泥、黑胡椒、堅果"},
-            "午": {"n": "天貝炒時蔬", "d": "500 kcal", "r": "天貝煎金黃、加入花椰菜與醬油拌炒"},
-            "晚": {"n": "紅燒豆腐煲", "d": "450 kcal", "r": "板豆腐煎過、加入紅蘿蔔/香菇紅燒燉煮"}
-        }
+        "low": {"早": {"n": "奇亞籽豆漿布丁", "d": "250 kcal", "r": "豆漿+奇亞籽放隔夜"}, "午": {"n": "鷹嘴豆藜麥沙拉", "d": "350 kcal", "r": "鷹嘴豆、藜麥、甜椒、檸檬油醋"}, "晚": {"n": "味噌豆腐蔬菜湯", "d": "200 kcal", "r": "板豆腐、海帶芽、味噌湯"}},
+        "high": {"早": {"n": "酪梨全麥吐司", "d": "400 kcal", "r": "全麥吐司、酪梨泥、堅果"}, "午": {"n": "天貝炒時蔬", "d": "500 kcal", "r": "天貝煎金黃、花椰菜拌炒"}, "晚": {"n": "紅燒豆腐煲", "d": "450 kcal", "r": "板豆腐紅燒、香菇、紅蘿蔔"}}
     },
     "蛋奶素": {
-        "low": {
-            "早": {"n": "希臘優格杯", "d": "250 kcal", "r": "無糖優格、藍莓、少量燕麥"},
-            "午": {"n": "涼拌雞絲(素)蒟蒻麵", "d": "350 kcal", "r": "蒟蒻麵、素雞絲(蛋白製品)、小黃瓜、和風醬"},
-            "晚": {"n": "番茄蔬菜蛋花湯", "d": "200 kcal", "r": "兩顆蛋、番茄、小白菜、清湯"}
-        },
-        "high": {
-            "早": {"n": "起司蔬菜烘蛋", "d": "400 kcal", "r": "兩顆蛋、菠菜、起司片、平底鍋烘烤"},
-            "午": {"n": "松露野菇義大利麵", "d": "550 kcal", "r": "義大利麵、鮮奶油/牛奶、綜合菇、松露醬"},
-            "晚": {"n": "歐姆蛋咖哩飯", "d": "500 kcal", "r": "滑嫩歐姆蛋、素食咖哩塊、馬鈴薯紅蘿蔔"}
-        }
+        "low": {"早": {"n": "希臘優格杯", "d": "250 kcal", "r": "無糖優格、藍莓"}, "午": {"n": "涼拌雞絲(素)蒟蒻麵", "d": "350 kcal", "r": "蒟蒻麵、素雞絲、和風醬"}, "晚": {"n": "番茄蔬菜蛋花湯", "d": "200 kcal", "r": "番茄、蛋花、小白菜"}},
+        "high": {"早": {"n": "起司蔬菜烘蛋", "d": "400 kcal", "r": "兩顆蛋、起司、菠菜烘烤"}, "午": {"n": "松露野菇義大利麵", "d": "550 kcal", "r": "義大利麵、鮮奶油、野菇"}, "晚": {"n": "歐姆蛋咖哩飯", "d": "500 kcal", "r": "歐姆蛋、素食咖哩"}}
     },
     "鍋邊素": {
-        "low": {
-            "早": {"n": "超商地瓜+茶葉蛋", "d": "280 kcal", "r": "中型蒸地瓜一顆、茶葉蛋一顆"},
-            "午": {"n": "關東煮輕食餐", "d": "350 kcal", "r": "白蘿蔔、娃娃菜、滷蛋、蒟蒻絲 (不喝湯)"},
-            "晚": {"n": "自助餐夾菜(去肉)", "d": "300 kcal", "r": "三樣深色蔬菜、一份豆腐、不淋肉燥"}
-        },
-        "high": {
-            "早": {"n": "蛋餅+無糖豆漿", "d": "400 kcal", "r": "起司蛋餅或蔬菜蛋餅、400ml 無糖豆漿"},
-            "午": {"n": "素食水餃餐", "d": "550 kcal", "r": "素水餃 10 顆、燙青菜一份、皮蛋豆腐"},
-            "晚": {"n": "潤餅(微糖)", "d": "450 kcal", "r": "多加高麗菜與豆干、不加肥肉、花生粉減半"}
-        }
+        "low": {"早": {"n": "超商地瓜+茶葉蛋", "d": "280 kcal", "r": "蒸地瓜、茶葉蛋"}, "午": {"n": "關東煮輕食餐", "d": "350 kcal", "r": "白蘿蔔、娃娃菜、滷蛋(不喝湯)"}, "晚": {"n": "自助餐夾菜(去肉)", "d": "300 kcal", "r": "深色蔬菜、豆腐、不淋肉燥"}},
+        "high": {"早": {"n": "蛋餅+無糖豆漿", "d": "400 kcal", "r": "蔬菜蛋餅、無糖豆漿"}, "午": {"n": "素食水餃餐", "d": "550 kcal", "r": "素水餃10顆、燙青菜"}, "晚": {"n": "潤餅(微糖)", "d": "450 kcal", "r": "多加高麗菜、去肥肉、少糖粉"}}
     }
 }
-
 menu_type = "low" if (remaining < 400 and daily_target > 0) else "high"
 safe_diet_type = current_diet_type if current_diet_type in menus else "全素 (Vegan)"
 current_menu = menus[safe_diet_type][menu_type]
@@ -287,13 +278,11 @@ with col1:
     st.write(f"**{current_menu['早']['n']}**")
     st.caption(current_menu['早']['d'])
     with st.expander("作法"): st.write(current_menu['早']['r'])
-
 with col2:
     st.markdown("#### 🍱 午餐")
     st.write(f"**{current_menu['午']['n']}**")
     st.caption(current_menu['午']['d'])
     with st.expander("作法"): st.write(current_menu['午']['r'])
-
 with col3:
     st.markdown("#### 🌙 晚餐")
     st.write(f"**{current_menu['晚']['n']}**")
@@ -301,4 +290,4 @@ with col3:
     with st.expander("作法"): st.write(current_menu['晚']['r'])
 
 st.divider()
-st.caption("Note: V4.2 - 支援刪除功能")
+st.caption("Note: V4.3 - 流量優化版 (Cache Enabled)")
