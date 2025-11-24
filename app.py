@@ -3,9 +3,13 @@ import pandas as pd
 import altair as alt
 from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
+import google.generativeai as genai
+import json
+import PIL.Image
+import io
 
 # --- 設定網頁 ---
-st.set_page_config(page_title="植感生活 Diary v5.2", page_icon="🌿", layout="centered")
+st.set_page_config(page_title="植感生活 Diary v6.1", page_icon="🌿", layout="centered")
 
 # --- CSS 美化 ---
 st.markdown("""
@@ -16,13 +20,20 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 st.markdown('<h1 class="main-header">🌿 植感生活 Diary</h1>', unsafe_allow_html=True)
-st.markdown('<p class="sub-header">數據可視化版 | 數值常駐顯示</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">AI 智慧辨識版 | 拍照自動算熱量</p>', unsafe_allow_html=True)
 
 # =========================================
-#  0. 資料庫連線
+#  0. 初始化設定 (資料庫 & AI)
 # =========================================
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+# 設定 Gemini AI
+if "GEMINI_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+else:
+    st.error("尚未設定 GEMINI_API_KEY，AI 功能無法使用。請至 Secrets 設定。")
+
+# --- 資料庫函式 (加入快取) ---
 @st.cache_data(ttl=5)
 def load_all_profiles():
     try: return conn.read(worksheet="Profile")
@@ -49,7 +60,7 @@ def load_weight_history():
         return df
     except: return pd.DataFrame(columns=["Name", "Date", "Weight", "BodyFat"])
 
-# 儲存與刪除函式
+# --- 寫入與刪除函式 ---
 def save_profile(user_name, data_dict):
     try:
         df = conn.read(worksheet="Profile", ttl=0)
@@ -72,6 +83,8 @@ def save_log(user_name, log_dict):
         df = pd.concat([df, pd.DataFrame([log_dict])], ignore_index=True)
         conn.update(worksheet="Logs", data=df)
         load_all_logs.clear()
+        # 上傳成功後，清除 AI 辨識結果的暫存，讓下次可以重新開始
+        if 'ai_result' in st.session_state: del st.session_state['ai_result']
         st.success("✅ 紀錄已上傳！")
         st.rerun()
     except Exception as e: st.error(f"儲存失敗: {e}")
@@ -101,11 +114,41 @@ def save_weight_log(user_name, weight, body_fat):
             p_df.at[idx, "BodyFat"] = body_fat
             conn.update(worksheet="Profile", data=p_df)
             load_all_profiles.clear()
-
         load_weight_history.clear()
         st.success("✅ 體重紀錄已更新！")
         st.rerun()
     except Exception as e: st.error(f"儲存失敗: {e}")
+
+# --- AI 辨識核心函式 ---
+def analyze_image_with_gemini(image_data):
+    try:
+        # 使用 gemini-1.5-flash 模型，速度快且支援圖片
+        model = genai.GenerativeModel('gemini-1.5-flash')
+
+        prompt = """
+        你是一位專業的營養師。請辨識這張圖片中的主要食物。
+        請回傳一個純 JSON 格式的物件，包含以下三個欄位，嚴格遵守此格式，不要有任何 markdown 標記或額外文字：
+        {
+            "food": "食物名稱 (例如: 紅燒牛肉麵)",
+            "calories": 估算的熱量整數 (例如: 800),
+            "protein": 估算的蛋白質克數整數 (例如: 30)
+        }
+        如果圖片模糊或無法辨識食物，請回傳 {"food": "無法辨識", "calories": 0, "protein": 0}
+        """
+
+        response = model.generate_content([prompt, image_data])
+
+        # 清理回傳字串，確保是合法的 JSON
+        text = response.text.strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.endswith("```"):
+            text = text[:-3]
+
+        return json.loads(text)
+    except Exception as e:
+        st.error(f"AI 辨識發生錯誤: {e}")
+        return None
 
 # =========================================
 #  1. 智慧登入區
@@ -121,7 +164,6 @@ if not user_name:
 else:
     if user_name != default_user: st.query_params["name"] = user_name
 
-# 讀取資料
 all_profiles = load_all_profiles()
 all_logs = load_all_logs()
 all_weights = load_weight_history()
@@ -196,46 +238,79 @@ with tab1:
 
     st.progress(min(current_cal / daily_target, 1.0) if daily_target > 0 else 0)
 
-    # --- 修改：熱量分佈改為折線圖 (Linear Chart) ---
     if not today_data.empty and 'Meal' in today_data.columns:
         st.write("")
-        st.write("▼ 各餐熱量趨勢")
-
-        # 定義餐別順序 (讓折線圖依照時間順序跑)
-        meal_order = ["早餐", "午餐", "晚餐", "點心/宵夜"]
+        st.write("▼ 各餐熱量分佈")
         meal_stats = today_data.groupby('Meal')['Calories'].sum().reset_index()
-        # 依照自訂順序排序
-        meal_stats['Meal'] = pd.Categorical(meal_stats['Meal'], categories=meal_order, ordered=True)
-        meal_stats = meal_stats.sort_values('Meal')
-
-        # 繪製折線圖
-        st.line_chart(meal_stats, x="Meal", y="Calories", color="#1E88E5")
+        base = alt.Chart(meal_stats).encode(theta=alt.Theta("Calories", stack=True))
+        pie = base.mark_arc(outerRadius=120, innerRadius=80).encode(color=alt.Color("Meal"), order=alt.Order("Calories", sort="descending"), tooltip=["Meal", "Calories"])
+        text = base.mark_text(radius=140).encode(text=alt.Text("Calories"), order=alt.Order("Calories", sort="descending"), color=alt.value("black"))
+        st.altair_chart(pie + text, use_container_width=True)
     else:
         st.info("尚未有紀錄，快去記一筆吧！")
 
-# --- TAB 2: 飲食紀錄 ---
+# --- TAB 2: 飲食紀錄 (整合 AI) ---
 with tab2:
-    with st.expander("➕ 新增飲食", expanded=True):
-        meal_type = st.radio("時段", ["早餐", "午餐", "晚餐", "點心/宵夜"], horizontal=True)
-        food_options = {"手動輸入": {"cal": 0, "prot": 0}, "無糖豆漿 (400ml)": {"cal": 135, "prot": 14}, "茶葉蛋 (1顆)": {"cal": 75, "prot": 7}, "素食便當 (一般)": {"cal": 700, "prot": 20}, "素食便當 (少油)": {"cal": 500, "prot": 18}, "燙青菜": {"cal": 50, "prot": 2}, "五穀飯 (一碗)": {"cal": 280, "prot": 5}, "水果 (一份)": {"cal": 60, "prot": 1}, "堅果 (一小把)": {"cal": 150, "prot": 4}}
-        f1, f2 = st.columns([2, 1])
-        with f1: choice = st.selectbox("選擇食物", list(food_options.keys()))
-        custom_name = ""; add_cal = 0; add_prot = 0
-        if choice == "手動輸入":
-            custom_name = st.text_input("食物名稱", placeholder="例如：紅豆餅")
-            in1, in2 = st.columns(2)
-            add_cal = in1.number_input("熱量", 0, 3000, 0)
-            add_prot = in2.number_input("蛋白質", 0, 200, 0)
-        else:
-            vals = food_options[choice]
-            in1, in2 = st.columns(2)
-            add_cal = in1.number_input("熱量", value=vals["cal"])
-            add_prot = in2.number_input("蛋白質", value=vals["prot"])
-        if st.button("上傳紀錄", use_container_width=True):
-            final_name = custom_name if choice == "手動輸入" else choice
-            if final_name: save_log(user_name, {"Date": today_str, "Meal": meal_type, "Food": final_name, "Calories": add_cal, "Protein": add_prot})
-            else: st.warning("請輸入名稱")
+    st.markdown("### 🍽️ 飲食紀錄")
 
+    if 'ai_result' not in st.session_state:
+        st.session_state.ai_result = None
+
+    # 選擇輸入方式：AI 拍照 或 手動輸入
+    input_mode = st.radio("輸入方式", ["📸 AI 拍照/上傳", "✍️ 手動輸入"], horizontal=True)
+
+    # --- AI 拍照模式 ---
+    if input_mode == "📸 AI 拍照/上傳":
+        st.info("📷 拍下你的食物，AI 會自動辨識並估算熱量與蛋白質！")
+
+        # 上傳圖片或使用相機
+        img_file = st.file_uploader("上傳照片", type=["jpg", "png", "jpeg"])
+        cam_file = st.camera_input("或直接拍照")
+
+        final_image = img_file if img_file else cam_file
+
+        if final_image:
+            # 顯示圖片預覽
+            st.image(final_image, caption="預覽圖片", width=250)
+
+            if st.button("🤖 開始 AI 分析", type="primary"):
+                with st.spinner("AI 正在觀察你的食物... (約需 3-5 秒)"):
+                    # 將圖片轉為 Gemini 可接受的格式
+                    img_bytes = final_image.getvalue()
+                    image = PIL.Image.open(io.BytesIO(img_bytes))
+
+                    # 呼叫 AI 分析
+                    result = analyze_image_with_gemini(image)
+
+                    if result:
+                        st.session_state.ai_result = result
+                        st.success("✨ 辨識成功！請確認下方數值並上傳。")
+                    else:
+                        st.error("❌ 辨識失敗，請重試或改用手動輸入。")
+
+    # --- 共用表單 (手動輸入 & AI 自動填入) ---
+    st.write("---")
+    with st.form("log_form"):
+        # 取得 AI 辨識結果 (如果有的話)
+        ai_data = st.session_state.ai_result if st.session_state.ai_result else {"food": "", "calories": 0, "protein": 0}
+
+        meal_type = st.radio("時段", ["早餐", "午餐", "晚餐", "點心/宵夜"], horizontal=True)
+
+        # 這裡會自動填入 AI 辨識出的食物名稱，也可以手動修改
+        f_name = st.text_input("食物名稱", value=ai_data['food'], placeholder="例如：紅燒牛肉麵")
+
+        c1, c2 = st.columns(2)
+        # 這裡會自動填入 AI 估算的數值
+        f_cal = c1.number_input("熱量 (kcal)", value=int(ai_data['calories']), step=10)
+        f_prot = c2.number_input("蛋白質 (g)", value=int(ai_data['protein']), step=1)
+
+        if st.form_submit_button("確認上傳", use_container_width=True):
+            if f_name:
+                save_log(user_name, {"Date": today_str, "Meal": meal_type, "Food": f_name, "Calories": f_cal, "Protein": f_prot})
+            else:
+                st.warning("請輸入食物名稱")
+
+    # --- 刪除管理區塊 ---
     if not today_data.empty:
         with st.expander("🗑️ 管理今日紀錄", expanded=False):
             st.write("勾選刪除：")
@@ -250,7 +325,7 @@ with tab2:
         show_cols = ["Meal", "Food", "Calories", "Protein"] if 'Meal' in today_data.columns else ["Food", "Calories", "Protein"]
         st.dataframe(today_data[show_cols], use_container_width=True, hide_index=True)
 
-# --- TAB 3: 體態追蹤 (數據常駐版) ---
+# --- TAB 3: 體態追蹤 ---
 with tab3:
     st.markdown("### 📉 體重變化趨勢")
     with st.expander("⚖️ 紀錄今日體重", expanded=False):
@@ -260,42 +335,28 @@ with tab3:
 
     if not user_weights.empty:
         chart_data = user_weights.copy()
-        chart_data['Date'] = pd.to_datetime(chart_data['Date']).dt.strftime('%Y-%m-%d') # 轉字串避免Altair時區問題
-        chart_data = chart_data.sort_values('Date')
-
-        # --- 使用 Altair 繪製 (數據常駐) ---
+        chart_data['Date'] = pd.to_datetime(chart_data['Date'])
         st.markdown("##### 體重走勢 (kg)")
-
-        # 基礎線圖 + 點
-        base = alt.Chart(chart_data).encode(x=alt.X('Date', title='日期'))
-        line = base.mark_line(color='#2E7D32').encode(y=alt.Y('Weight', title='體重', scale=alt.Scale(zero=False)))
-        points = base.mark_circle(color='#2E7D32', size=60).encode(y='Weight', tooltip=['Date', 'Weight'])
-
-        # ⭐️ 關鍵：使用 mark_text 讓文字常駐顯示
-        text = base.mark_text(align='left', dx=5, dy=-5, fontSize=12, color='#2E7D32').encode(
-            y='Weight',
-            text=alt.Text('Weight', format='.1f')
-        )
-
+        base = alt.Chart(chart_data).encode(x=alt.X('Date:T', title='日期', axis=alt.Axis(format='%m/%d')))
+        line = base.mark_line(color='#2E7D32').encode(y=alt.Y('Weight', title='體重', scale=alt.Scale(zero=False, padding=1)))
+        points = base.mark_circle(color='#2E7D32', size=80).encode(y='Weight', tooltip=[alt.Tooltip('Date', title='日期', format='%Y-%m-%d'), 'Weight'])
+        text = base.mark_text(align='center', dy=-15, fontSize=12, color='#2E7D32').encode(y='Weight', text=alt.Text('Weight', format='.1f'))
         st.altair_chart((line + points + text).interactive(), use_container_width=True)
 
-        # 體脂圖同理
         st.markdown("##### 體脂率走勢 (%)")
-        line_bf = base.mark_line(color='#558B2F').encode(y=alt.Y('BodyFat', title='體脂', scale=alt.Scale(zero=False)))
-        points_bf = base.mark_circle(color='#558B2F', size=60).encode(y='BodyFat', tooltip=['Date', 'BodyFat'])
-        text_bf = base.mark_text(align='left', dx=5, dy=-5, fontSize=12, color='#558B2F').encode(
-            y='BodyFat',
-            text=alt.Text('BodyFat', format='.1f')
-        )
+        line_bf = base.mark_line(color='#558B2F').encode(y=alt.Y('BodyFat', title='體脂', scale=alt.Scale(zero=False, padding=1)))
+        points_bf = base.mark_circle(color='#558B2F', size=80).encode(y='BodyFat', tooltip=['BodyFat'])
+        text_bf = base.mark_text(align='center', dy=-15, fontSize=12, color='#558B2F').encode(y='BodyFat', text=alt.Text('BodyFat', format='.1f'))
         st.altair_chart((line_bf + points_bf + text_bf).interactive(), use_container_width=True)
 
         st.caption("最近 5 筆紀錄：")
+        chart_data['Date'] = chart_data['Date'].dt.strftime('%Y-%m-%d')
         st.dataframe(chart_data.tail(5), use_container_width=True, hide_index=True)
     else:
         st.info("目前還沒有體重紀錄，快輸入第一筆吧！")
 
 # =========================================
-#  6. 🥑 靈感廚房 (已加回!)
+#  6. 🥑 靈感廚房
 # =========================================
 st.divider()
 st.markdown(f"### 🥑 靈感廚房 ({current_diet_type})")
@@ -313,12 +374,10 @@ menus = {
         "low": {"早": {"n": "超商地瓜+茶葉蛋", "d": "280 kcal", "r": "蒸地瓜、茶葉蛋"}, "午": {"n": "關東煮輕食餐", "d": "350 kcal", "r": "白蘿蔔、娃娃菜、滷蛋"}, "晚": {"n": "自助餐夾菜(去肉)", "d": "300 kcal", "r": "深色蔬菜、豆腐"}}
     },
 }
-# 防呆預設
 safe_menu = menus.get(current_diet_type, menus["全素 (Vegan)"])
-# 鍋邊素若無 high 選項則 fallback 到 low
 rec_map = safe_menu["low"] if (remaining < 400 and daily_target > 0) else safe_menu.get("high", safe_menu["low"])
-
 menu_msg = "輕盈低卡餐" if (remaining < 400 and daily_target > 0) else "營養均衡餐"
+
 st.info(f"💡 推薦 **{current_diet_type} - {menu_msg}**：")
 
 c1, c2, c3 = st.columns(3)
@@ -339,4 +398,4 @@ with c3:
     with st.expander("作法"): st.write(rec_map['晚']['r'])
 
 st.divider()
-st.caption("Note: V5.2 - 數據常駐顯示 | 靈感廚房回歸")
+st.caption("Note: V6.1 - AI 智慧辨識完整版 (Gemini)")
