@@ -1,45 +1,37 @@
 import streamlit as st
 import pandas as pd
 
-# --- 設定網頁基本配置 (分頁標題 icon) ---
-st.set_page_config(page_title="植感生活 Diary", page_icon="🌿", layout="centered")
+# --- 設定網頁基本配置 ---
+st.set_page_config(page_title="植感生活 Diary v2.5", page_icon="🌿", layout="centered")
 
-# --- 自定義 CSS 美化標題 ---
+# --- CSS 美化標題 ---
 st.markdown("""
     <style>
-    .main-header {
-        font-family: 'Helvetica Neue', sans-serif;
-        color: #2E7D32; /* 深綠色 */
-        text-align: center;
-        font-weight: 700;
-        padding-bottom: 20px;
-    }
-    .sub-header {
-        font-family: 'Helvetica Neue', sans-serif;
-        color: #558B2F; /* 較淺的綠色 */
-        text-align: center;
-        font-size: 1.2rem;
-        margin-top: -20px;
-        margin-bottom: 30px;
-    }
+    .main-header { font-family: 'Helvetica Neue', sans-serif; color: #2E7D32; text-align: center; font-weight: 700; padding-bottom: 10px; }
+    .sub-header { font-family: 'Helvetica Neue', sans-serif; color: #558B2F; text-align: center; font-size: 1.1rem; margin-top: -15px; margin-bottom: 20px; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 顯示美化後的標題 ---
 st.markdown('<h1 class="main-header">🌿 植感生活 Diary</h1>', unsafe_allow_html=True)
 st.markdown('<p class="sub-header">Plant-Based Living & Body Balance</p>', unsafe_allow_html=True)
 
-
-# --- 初始化 Session State (暫存) ---
 if 'food_log' not in st.session_state:
     st.session_state.food_log = []
 
 # =========================================
-#  核心數據區 (維持 V2.3 的手機友善介面)
+#  1. 設定區 (加入素食類型選擇)
 # =========================================
-with st.expander("⚙️ 設定個人數據 (InBody / 運動量)", expanded=False):
-    st.caption("輸入更精準的數據，獲得專屬計算結果")
+with st.expander("⚙️ 個人檔案設定 (素食類型 / InBody)", expanded=False):
+    # --- 新增：素食類型選擇 ---
+    st.subheader("🌱 飲食偏好")
+    diet_type = st.radio(
+        "你是哪種素食者？(將影響食譜建議)",
+        ["全素 (Vegan)", "蛋奶素 (Lacto-Ovo)", "鍋邊素 (方便素)"],
+        horizontal=True
+    )
+    st.divider()
 
+    # --- 身體數據 ---
     col1, col2 = st.columns(2)
     gender = col1.radio("生理性別", ["男", "女"], horizontal=True)
     age = col2.number_input("年齡", 18, 100, 30)
@@ -48,72 +40,49 @@ with st.expander("⚙️ 設定個人數據 (InBody / 運動量)", expanded=Fals
     height = col3.number_input("身高 (cm)", 100, 250, 170)
     weight = col4.number_input("體重 (kg)", 30.0, 200.0, 60.0)
 
-    # 體脂率輸入
+    # --- InBody / BMR ---
     st.divider()
     use_bodyfat = st.checkbox("我有體脂率數據 (InBody)")
-
     calculated_bmr = 0
     if use_bodyfat:
-        body_fat = st.number_input("輸入體脂率 (%)", 3.0, 50.0, 20.0, step=0.1)
-        # Katch-McArdle 公式
+        body_fat = st.number_input("輸入體脂率 (%)", 3.0, 60.0, 20.0, step=0.1)
         lbm = weight * (1 - (body_fat / 100))
         calculated_bmr = 370 + (21.6 * lbm)
-        st.caption(f"✅ 已啟用 Katch公式 (去脂體重 {lbm:.1f} kg)")
+        st.caption(f"已啟用 Katch公式 (去脂體重 {lbm:.1f} kg)")
     else:
-        # Mifflin-St Jeor 公式
-        if gender == "男":
-            calculated_bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
-        else:
-            calculated_bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
+        if gender == "男": calculated_bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
+        else: calculated_bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
 
-    # 手動 BMR 修正
-    use_manual_bmr = st.checkbox(f"系統估算 BMR 為 {int(calculated_bmr)}，我要手動修正")
-    if use_manual_bmr:
-        final_bmr = st.number_input("手動輸入 BMR", 500, 5000, int(calculated_bmr))
-    else:
-        final_bmr = calculated_bmr
+    use_manual_bmr = st.checkbox(f"系統估算 BMR: {int(calculated_bmr)}，我要手動修正")
+    final_bmr = st.number_input("BMR 數值", 500, 5000, int(calculated_bmr)) if use_manual_bmr else calculated_bmr
 
-    # 運動頻率
+    # --- 運動量 ---
     st.divider()
-    activity_option = st.selectbox(
-        "每週運動強度",
-        ("久坐 (辦公室/無運動)", "輕度 (每週運動 1-3 天)", "中度 (每週運動 3-5 天)", "高度 (每週運動 6-7 天)", "超高度 (勞力/選手)")
-    )
+    activity_option = st.selectbox("每週運動強度",
+        ("久坐 (無運動)", "輕度 (1-3天)", "中度 (3-5天)", "高度 (6-7天)", "超高度 (選手)"))
     multipliers = {"久坐": 1.2, "輕度": 1.375, "中度": 1.55, "高度": 1.725, "超高度": 1.9}
     act_key = activity_option[:2]
-    if "久坐" in activity_option: act_key = "久坐"
-    elif "輕度" in activity_option: act_key = "輕度"
-    elif "中度" in activity_option: act_key = "中度"
-    elif "高度" in activity_option: act_key = "高度"
-    else: act_key = "超高度"
+    tdee = final_bmr * multipliers.get(act_key, 1.2)
 
-    tdee = final_bmr * multipliers[act_key]
-
-# 目標設定
-with st.expander("🎯 設定體態目標", expanded=False):
+# =========================================
+#  2. 目標設定
+# =========================================
+with st.expander("🎯 體態目標設定", expanded=False):
     c1, c2 = st.columns(2)
     target_weight = c1.number_input("目標體重", 30.0, 200.0, weight)
     target_days = c2.number_input("預計天數", 7, 365, 30)
 
     weight_diff = weight - target_weight
-    if weight_diff > 0:
-        daily_deficit = (weight_diff * 7700) / target_days
-        daily_target = tdee - daily_deficit
-    elif weight_diff < 0:
-        daily_surplus = (abs(weight_diff) * 7700) / target_days
-        daily_target = tdee + daily_surplus
-    else:
-        daily_target = tdee
+    if weight_diff > 0: daily_target = tdee - ((weight_diff * 7700) / target_days)
+    elif weight_diff < 0: daily_target = tdee + ((abs(weight_diff) * 7700) / target_days)
+    else: daily_target = tdee
 
-protein_goal = weight * 1.5
+    protein_goal = weight * 1.5
 
 # =========================================
-#  儀表板與紀錄區
+#  3. 儀表板
 # =========================================
-st.divider()
-# st.subheader("📊 今日概況") # 舊標題
-st.markdown("### 📊 今日概況") # 新標題樣式
-
+st.markdown("### 📊 今日概況")
 total_cal = sum([item['熱量'] for item in st.session_state.food_log])
 total_prot = sum([item['蛋白質'] for item in st.session_state.food_log])
 remaining = daily_target - total_cal
@@ -123,17 +92,16 @@ col_a.metric("剩餘熱量", f"{int(remaining)}", f"目標 {int(daily_target)}")
 col_b.metric("蛋白質進度", f"{int(total_prot)}g", f"目標 {int(protein_goal)}g")
 st.progress(min(total_cal / daily_target, 1.0) if daily_target > 0 else 0)
 
-# 飲食紀錄按鈕區
-st.divider()
+# =========================================
+#  4. 飲食紀錄
+# =========================================
 st.markdown("### 🍽️ 飲食紀錄")
-with st.expander("➕ 新增一筆紀錄", expanded=False):
-    # 簡易資料庫
+with st.expander("➕ 新增紀錄", expanded=False):
     food_options = {
         "手動輸入": {"cal": 0, "prot": 0},
         "無糖豆漿 (400ml)": {"cal": 135, "prot": 14},
         "茶葉蛋 (1顆)": {"cal": 75, "prot": 7},
         "素食便當 (一般)": {"cal": 700, "prot": 20},
-        "素食便當 (減飯/少油)": {"cal": 500, "prot": 18},
         "燙青菜": {"cal": 50, "prot": 2},
         "五穀飯 (一碗)": {"cal": 280, "prot": 5},
         "水果 (一份)": {"cal": 60, "prot": 1},
@@ -141,17 +109,19 @@ with st.expander("➕ 新增一筆紀錄", expanded=False):
     }
     f1, f2 = st.columns([2, 1])
     with f1: choice = st.selectbox("選擇食物", list(food_options.keys()))
-    custom_name = ""; add_cal = 0; add_prot = 0
+
+    custom_name = ""
     if choice == "手動輸入":
         custom_name = st.text_input("食物名稱", "自訂食物")
         in1, in2 = st.columns(2)
-        add_cal = in1.number_input("熱量 (kcal)", 0, 3000, 0)
-        add_prot = in2.number_input("蛋白質 (g)", 0, 200, 0)
+        add_cal = in1.number_input("熱量", 0, 3000, 0)
+        add_prot = in2.number_input("蛋白質", 0, 200, 0)
     else:
         vals = food_options[choice]
         in1, in2 = st.columns(2)
         add_cal = in1.number_input("熱量", value=vals["cal"])
         add_prot = in2.number_input("蛋白質", value=vals["prot"])
+
     if st.button("確認加入", use_container_width=True):
         final_name = custom_name if choice == "手動輸入" else choice
         st.session_state.food_log.append({"食物": final_name, "熱量": add_cal, "蛋白質": add_prot})
@@ -160,127 +130,83 @@ with st.expander("➕ 新增一筆紀錄", expanded=False):
 if st.session_state.food_log:
     df = pd.DataFrame(st.session_state.food_log)
     st.dataframe(df, use_container_width=True, hide_index=True)
-    d1, d2 = st.columns(2)
-    with d1: st.download_button("📥 下載 CSV", data=df.to_csv(index=False).encode('utf-8-sig'), file_name='log.csv', mime='text/csv', use_container_width=True)
-    with d2:
-        if st.button("🗑️ 清空", use_container_width=True):
-            st.session_state.food_log = []
-            st.rerun()
+    if st.button("🗑️ 清空", use_container_width=True):
+        st.session_state.food_log = []
+        st.rerun()
 
 # =========================================
-#  新增功能：靈感廚房 (三餐建議 + 食譜)
+#  5. 靈感廚房 (依照素食類型與熱量推薦)
 # =========================================
 st.divider()
-st.markdown("### 🥑 靈感廚房：三餐提案")
+st.markdown(f"### 🥑 靈感廚房 ({diet_type})")
 
-# 定義食譜資料庫 (這裡先內建兩個範本)
-recipe_book = {
-    "低卡輕盈餐 (適合剩餘熱量較少時)": {
-        "早餐": {
-            "name": "希臘優格燕麥杯",
-            "desc": "約 250 kcal / 蛋白質 15g",
-            "recipe": """
-            * **食材：** 無糖希臘優格 150g、大燕麥片 3匙、奇亞籽 1匙、藍莓/草莓適量。
-            * **作法：**
-                1. 前一晚將燕麥片與奇亞籽混入優格中，放冰箱冷藏（隔夜燕麥）。
-                2. 早上取出，鋪上新鮮水果即可享用。
-            """
+# 定義食譜資料庫 (包含三種素食類型的 高/低熱量 菜單)
+menus = {
+    "全素 (Vegan)": {
+        "low": {
+            "早": {"n": "奇亞籽豆漿布丁", "d": "250 kcal / 12g 蛋", "r": "豆漿+奇亞籽放隔夜，早起加水果"},
+            "午": {"n": "鷹嘴豆藜麥沙拉", "d": "350 kcal / 18g 蛋", "r": "鷹嘴豆、藜麥、甜椒、小黃瓜、檸檬油醋醬"},
+            "晚": {"n": "味噌豆腐蔬菜湯", "d": "200 kcal / 12g 蛋", "r": "板豆腐、海帶芽、綜合菇類、味噌湯底"}
         },
-        "午餐": {
-            "name": "涼拌雞絲(素雞)蒟蒻麵",
-            "desc": "約 350 kcal / 蛋白質 20g",
-            "recipe": """
-            * **食材：** 蒟蒻麵一包、素雞絲(或剝皮辣椒口味) 100g、小黃瓜絲、紅蘿蔔絲、和風醬汁。
-            * **作法：**
-                1. 蒟蒻麵用熱水燙過即撈起冰鎮。
-                2. 所有蔬菜切絲。
-                3. 將麵、蔬菜絲、素雞絲混合，淋上和風醬汁拌勻。
-            """
-        },
-        "晚餐": {
-            "name": "蔬菜豆腐味噌湯 + 燙青菜",
-            "desc": "約 200 kcal / 蛋白質 12g",
-            "recipe": """
-            * **食材：** 板豆腐半塊、海帶芽、綜合蔬菜(高麗菜/菇類)、味噌一匙。
-            * **作法：**
-                1. 水滾後放入蔬菜與豆腐煮熟。
-                2. 關火，將味噌先用一點熱水化開，再倒入鍋中攪拌（避免持續滾煮破壞風味）。
-                3. 另外燙一份深綠色蔬菜搭配。
-            """
+        "high": {
+            "早": {"n": "酪梨全麥吐司", "d": "400 kcal / 15g 蛋", "r": "全麥吐司、酪梨泥、黑胡椒、堅果"},
+            "午": {"n": "天貝炒時蔬", "d": "500 kcal / 25g 蛋", "r": "天貝煎金黃、加入花椰菜與醬油拌炒"},
+            "晚": {"n": "紅燒豆腐煲", "d": "450 kcal / 20g 蛋", "r": "板豆腐煎過、加入紅蘿蔔/香菇紅燒燉煮"}
         }
     },
-    "均衡活力餐 (適合熱量充足時)": {
-        "早餐": {
-            "name": "酪梨全麥吐司加蛋",
-            "desc": "約 400 kcal / 蛋白質 18g",
-            "recipe": """
-            * **食材：** 全麥吐司 2片、酪梨半顆、水煮蛋或煎蛋 1顆、黑胡椒。
-            * **作法：**
-                1. 酪梨壓成泥，抹在烤好的吐司上。
-                2. 放上蛋，撒上黑胡椒調味。
-            """
+    "蛋奶素 (Lacto-Ovo)": {
+        "low": {
+            "早": {"n": "希臘優格杯", "d": "250 kcal / 15g 蛋", "r": "無糖優格、藍莓、少量燕麥"},
+            "午": {"n": "涼拌雞絲(素)蒟蒻麵", "d": "350 kcal / 20g 蛋", "r": "蒟蒻麵、素雞絲(蛋白製品)、小黃瓜、和風醬"},
+            "晚": {"n": "番茄蔬菜蛋花湯", "d": "200 kcal / 12g 蛋", "r": "兩顆蛋、番茄、小白菜、清湯"}
         },
-        "午餐": {
-            "name": "鷹嘴豆藜麥彩虹沙拉",
-            "desc": "約 500 kcal / 蛋白質 25g",
-            "recipe": """
-            * **食材：** 熟藜麥半碗、鷹嘴豆半罐(瀝乾)、甜椒丁、小黃瓜丁、紫洋蔥丁、毛豆仁、橄欖油檸檬醬汁。
-            * **作法：**
-                1. 將所有食材在一個大碗中混合。
-                2. 淋上橄欖油、檸檬汁、少許鹽巴拌勻即可。可一次做多天份冷藏。
-            """
+        "high": {
+            "早": {"n": "起司蔬菜烘蛋", "d": "400 kcal / 22g 蛋", "r": "兩顆蛋、菠菜、起司片、平底鍋烘烤"},
+            "午": {"n": "松露野菇義大利麵", "d": "550 kcal / 18g 蛋", "r": "義大利麵、鮮奶油/牛奶、綜合菇、松露醬"},
+            "晚": {"n": "歐姆蛋咖哩飯", "d": "500 kcal / 15g 蛋", "r": "滑嫩歐姆蛋、素食咖哩塊、馬鈴薯紅蘿蔔"}
+        }
+    },
+    "鍋邊素 (方便素)": {
+        "low": {
+            "早": {"n": "超商地瓜+茶葉蛋", "d": "280 kcal / 10g 蛋", "r": "中型蒸地瓜一顆、茶葉蛋一顆"},
+            "午": {"n": "關東煮輕食餐", "d": "350 kcal / 15g 蛋", "r": "白蘿蔔、娃娃菜、滷蛋、蒟蒻絲 (不喝湯)"},
+            "晚": {"n": "自助餐夾菜(去肉)", "d": "300 kcal / 10g 蛋", "r": "三樣深色蔬菜、一份豆腐、不淋肉燥"}
         },
-        "晚餐": {
-            "name": "香煎天貝佐時蔬",
-            "desc": "約 450 kcal / 蛋白質 30g",
-            "recipe": """
-            * **食材：** 天貝 150g、花椰菜、四季豆、醬油膏、蒜末(選用)。
-            * **作法：**
-                1. 天貝切片，平底鍋少油兩面煎至金黃。加入一點醬油膏燒入味。
-                2. 原鍋利用餘油炒熟蔬菜，加鹽調味。
-                3. 組合盛盤。
-            """
+        "high": {
+            "早": {"n": "蛋餅+無糖豆漿", "d": "400 kcal / 15g 蛋", "r": "起司蛋餅或蔬菜蛋餅、400ml 無糖豆漿"},
+            "午": {"n": "素食水餃餐", "d": "550 kcal / 18g 蛋", "r": "素水餃 10 顆、燙青菜一份、皮蛋豆腐"},
+            "晚": {"n": "潤餅(微糖)", "d": "450 kcal / 15g 蛋", "r": "多加高麗菜與豆干、不加肥肉、花生粉減半"}
         }
     }
 }
 
-# 判斷邏輯：根據剩餘熱量推薦
-if remaining < 400 and daily_target > 0:
-    recommendation_key = "低卡輕盈餐 (適合剩餘熱量較少時)"
-    st.info("💡 今日額度較少，推薦你清爽低負擔的餐點：")
+# 推薦邏輯
+menu_type = "low" if (remaining < 400 and daily_target > 0) else "high"
+current_menu = menus[diet_type][menu_type]
+
+if menu_type == "low":
+    st.info(f"💡 今日額度較少，推薦 **{diet_type} - 輕盈低卡餐**：")
 else:
-    recommendation_key = "均衡活力餐 (適合熱量充足時)"
-    if daily_target > 0:
-        st.success("💡 今日熱量充足，來點營養豐富的美味餐點吧！")
+    st.success(f"💡 今日熱量充足，推薦 **{diet_type} - 營養均衡餐**：")
 
-# 顯示三餐建議與食譜
-selected_plan = recipe_book[recommendation_key]
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.markdown("#### ☀️ 早餐")
+    st.write(f"**{current_menu['早']['n']}**")
+    st.caption(current_menu['早']['d'])
+    with st.expander("作法"): st.write(current_menu['早']['r'])
 
-col_meal1, col_meal2, col_meal3 = st.columns(3)
+with c2:
+    st.markdown("#### 🍱 午餐")
+    st.write(f"**{current_menu['午']['n']}**")
+    st.caption(current_menu['午']['d'])
+    with st.expander("作法"): st.write(current_menu['午']['r'])
 
-with col_meal1:
-    st.markdown(f"#### ☀️ 早餐")
-    meal = selected_plan["早餐"]
-    st.write(f"**{meal['name']}**")
-    st.caption(meal['desc'])
-    with st.expander("👨‍🍳 查看作法"):
-        st.markdown(meal['recipe'])
-
-with col_meal2:
-    st.markdown(f"#### 🍱 午餐")
-    meal = selected_plan["午餐"]
-    st.write(f"**{meal['name']}**")
-    st.caption(meal['desc'])
-    with st.expander("👨‍🍳 查看作法"):
-        st.markdown(meal['recipe'])
-
-with col_meal3:
-    st.markdown(f"#### 🌙 晚餐")
-    meal = selected_plan["晚餐"]
-    st.write(f"**{meal['name']}**")
-    st.caption(meal['desc'])
-    with st.expander("👨‍🍳 查看作法"):
-        st.markdown(meal['recipe'])
+with c3:
+    st.markdown("#### 🌙 晚餐")
+    st.write(f"**{current_menu['晚']['n']}**")
+    st.caption(current_menu['晚']['d'])
+    with st.expander("作法"): st.write(current_menu['晚']['r'])
 
 st.divider()
-st.caption("Note: 這是一個基於 Streamlit 構建的個人化素食生活管理工具。V2.4")
+st.caption("Note: 素食分類與食譜僅供參考，請依個人過敏源調整。")
