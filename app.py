@@ -4,7 +4,7 @@ from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
 # --- 設定網頁 ---
-st.set_page_config(page_title="植感生活 Diary v4.0", page_icon="🌿", layout="centered")
+st.set_page_config(page_title="植感生活 Diary v4.1", page_icon="🌿", layout="centered")
 
 # --- CSS 美化 ---
 st.markdown("""
@@ -14,25 +14,23 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 st.markdown('<h1 class="main-header">🌿 植感生活 Diary</h1>', unsafe_allow_html=True)
-st.markdown('<p class="sub-header">多人連線版 | 專屬你的紀錄</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">雲端紀錄 | 食譜回歸版</p>', unsafe_allow_html=True)
 
 # =========================================
 #  0. 資料庫連線與邏輯
 # =========================================
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# 載入所有人的 Profile，再篩選出你的
 def load_all_profiles():
     try:
         return conn.read(worksheet="Profile", ttl=0)
     except:
         return pd.DataFrame(columns=["Name", "Height", "Weight", "Age", "Gender", "DietType", "BodyFat", "Activity", "TargetWeight", "TargetDays"])
 
-# 載入所有人的 Logs，再篩選出你的
 def load_all_logs():
     try:
         df = conn.read(worksheet="Logs", ttl=0)
-        # 修正欄位判讀錯誤
+        # 強制修復欄位讀取錯誤
         if list(df.columns) == ['A', 'B', 'C', 'D', 'E']:
             df.columns = ["Name", "Date", "Food", "Calories", "Protein"]
             if not df.empty and str(df.iloc[0]["Name"]) == "Name": df = df.iloc[1:]
@@ -44,33 +42,27 @@ def load_all_logs():
     except:
         return pd.DataFrame(columns=["Name", "Date", "Food", "Calories", "Protein"])
 
-# 儲存 Profile (更新邏輯：先讀全部 -> 找到你的那行更新 -> 全部寫回)
 def save_profile(user_name, data_dict):
     try:
         df = load_all_profiles()
-        data_dict["Name"] = user_name # 加上名字標籤
-
+        data_dict["Name"] = user_name
         if user_name in df["Name"].values:
-            # 如果是舊用戶，更新那一列
             idx = df[df["Name"] == user_name].index[0]
             for key, val in data_dict.items():
                 df.at[idx, key] = val
         else:
-            # 如果是新用戶，新增一行
             new_row = pd.DataFrame([data_dict])
             df = pd.concat([df, new_row], ignore_index=True)
-
         conn.update(worksheet="Profile", data=df)
         st.success(f"✅ {user_name} 的檔案已更新！")
         st.rerun()
     except Exception as e:
         st.error(f"儲存失敗: {e}")
 
-# 儲存 Log (直接附加，加上名字標籤)
 def save_log(user_name, log_dict):
     try:
         df = load_all_logs()
-        log_dict["Name"] = user_name # 加上名字標籤
+        log_dict["Name"] = user_name
         new_row = pd.DataFrame([log_dict])
         df = pd.concat([df, new_row], ignore_index=True)
         conn.update(worksheet="Logs", data=df)
@@ -80,38 +72,36 @@ def save_log(user_name, log_dict):
         st.error(f"儲存失敗: {e}")
 
 # =========================================
-#  1. 登入區 (關鍵！)
+#  1. 登入區
 # =========================================
 st.info("👋 歡迎！請輸入你的暱稱來讀取專屬資料。")
 user_name = st.text_input("👤 請輸入你的暱稱 (例如：小明)", key="login_name")
 
 if not user_name:
     st.warning("請先輸入暱稱才能開始使用喔！")
-    st.stop() # 沒輸入名字就停在這裡，不執行下面的程式
-
-# --- 以下的程式碼，都只會針對 user_name 處理 ---
+    st.stop()
 
 # 讀取資料
 all_profiles = load_all_profiles()
 all_logs = load_all_logs()
 
-# 篩選出目前使用者的資料
 user_profile = all_profiles[all_profiles["Name"] == user_name] if not all_profiles.empty else pd.DataFrame()
 user_logs = all_logs[all_logs["Name"] == user_name] if not all_logs.empty else pd.DataFrame()
 
-# 設定預設值
 if user_profile.empty:
     st.caption(f"✨ 嗨 {user_name}，這是你第一次使用，請先設定個人檔案。")
     defaults = {"Height": 160, "Weight": 50, "Age": 25, "Gender": "女", "DietType": "全素 (Vegan)", "BodyFat": 25.0, "Activity": "輕度 (1-3天)", "TargetWeight": 48, "TargetDays": 30}
 else:
     defaults = user_profile.iloc[0].to_dict()
 
+current_diet_type = defaults.get("DietType", "全素 (Vegan)")
+
 # =========================================
 #  2. 個人檔案設定
 # =========================================
 with st.expander(f"⚙️ {user_name} 的檔案設定", expanded=user_profile.empty):
     with st.form("profile_form"):
-        diet_type = st.radio("素食類型", ["全素 (Vegan)", "蛋奶素", "鍋邊素"], index=["全素 (Vegan)", "蛋奶素", "鍋邊素"].index(defaults.get("DietType", "全素 (Vegan)")), horizontal=True)
+        diet_type = st.radio("素食類型", ["全素 (Vegan)", "蛋奶素", "鍋邊素"], index=["全素 (Vegan)", "蛋奶素", "鍋邊素"].index(current_diet_type), horizontal=True)
         c1, c2 = st.columns(2)
         height = c1.number_input("身高", 100, 250, int(defaults.get("Height", 160)))
         weight = c2.number_input("體重", 30.0, 200.0, float(defaults.get("Weight", 50.0)))
@@ -138,7 +128,7 @@ daily_target = tdee - ((diff * 7700) / t_days) if diff > 0 else tdee + ((abs(dif
 prot_goal = weight * 1.5
 
 # =========================================
-#  3. 今日儀表板 (只顯示該使用者的)
+#  3. 今日儀表板
 # =========================================
 today_str = datetime.now().strftime('%Y-%m-%d')
 today_data = user_logs[user_logs['Date'] == today_str] if not user_logs.empty else pd.DataFrame()
@@ -169,7 +159,6 @@ with st.expander("➕ 新增飲食", expanded=True):
         "水果 (一份)": {"cal": 60, "prot": 1},
         "堅果 (一小把)": {"cal": 150, "prot": 4},
     }
-
     f1, f2 = st.columns([2, 1])
     with f1: choice = st.selectbox("選擇食物", list(food_options.keys()))
 
@@ -196,7 +185,7 @@ if not today_data.empty:
     st.dataframe(today_data[["Food", "Calories", "Protein"]], use_container_width=True, hide_index=True)
 
 # =========================================
-#  5. 歷史時光機 (只看自己的)
+#  5. 歷史回顧
 # =========================================
 st.divider()
 st.markdown("### 📅 歷史回顧")
@@ -207,3 +196,82 @@ if not user_logs.empty:
         st.info(f"熱量：{h_data['Calories'].sum()} | 蛋白：{h_data['Protein'].sum()}")
         st.dataframe(h_data[["Food", "Calories", "Protein"]], use_container_width=True, hide_index=True)
     else: st.warning("該日無紀錄")
+
+# =========================================
+#  6. 🥑 靈感廚房 (食譜回歸！)
+# =========================================
+st.divider()
+st.markdown(f"### 🥑 靈感廚房 ({current_diet_type})")
+
+# 食譜資料庫
+menus = {
+    "全素 (Vegan)": {
+        "low": {
+            "早": {"n": "奇亞籽豆漿布丁", "d": "250 kcal / 12g 蛋", "r": "豆漿+奇亞籽放隔夜，早起加水果"},
+            "午": {"n": "鷹嘴豆藜麥沙拉", "d": "350 kcal / 18g 蛋", "r": "鷹嘴豆、藜麥、甜椒、小黃瓜、檸檬油醋醬"},
+            "晚": {"n": "味噌豆腐蔬菜湯", "d": "200 kcal / 12g 蛋", "r": "板豆腐、海帶芽、綜合菇類、味噌湯底"}
+        },
+        "high": {
+            "早": {"n": "酪梨全麥吐司", "d": "400 kcal / 15g 蛋", "r": "全麥吐司、酪梨泥、黑胡椒、堅果"},
+            "午": {"n": "天貝炒時蔬", "d": "500 kcal / 25g 蛋", "r": "天貝煎金黃、加入花椰菜與醬油拌炒"},
+            "晚": {"n": "紅燒豆腐煲", "d": "450 kcal / 20g 蛋", "r": "板豆腐煎過、加入紅蘿蔔/香菇紅燒燉煮"}
+        }
+    },
+    "蛋奶素": {
+        "low": {
+            "早": {"n": "希臘優格杯", "d": "250 kcal / 15g 蛋", "r": "無糖優格、藍莓、少量燕麥"},
+            "午": {"n": "涼拌雞絲(素)蒟蒻麵", "d": "350 kcal / 20g 蛋", "r": "蒟蒻麵、素雞絲(蛋白製品)、小黃瓜、和風醬"},
+            "晚": {"n": "番茄蔬菜蛋花湯", "d": "200 kcal / 12g 蛋", "r": "兩顆蛋、番茄、小白菜、清湯"}
+        },
+        "high": {
+            "早": {"n": "起司蔬菜烘蛋", "d": "400 kcal / 22g 蛋", "r": "兩顆蛋、菠菜、起司片、平底鍋烘烤"},
+            "午": {"n": "松露野菇義大利麵", "d": "550 kcal / 18g 蛋", "r": "義大利麵、鮮奶油/牛奶、綜合菇、松露醬"},
+            "晚": {"n": "歐姆蛋咖哩飯", "d": "500 kcal / 15g 蛋", "r": "滑嫩歐姆蛋、素食咖哩塊、馬鈴薯紅蘿蔔"}
+        }
+    },
+    "鍋邊素": {
+        "low": {
+            "早": {"n": "超商地瓜+茶葉蛋", "d": "280 kcal / 10g 蛋", "r": "中型蒸地瓜一顆、茶葉蛋一顆"},
+            "午": {"n": "關東煮輕食餐", "d": "350 kcal / 15g 蛋", "r": "白蘿蔔、娃娃菜、滷蛋、蒟蒻絲 (不喝湯)"},
+            "晚": {"n": "自助餐夾菜(去肉)", "d": "300 kcal / 10g 蛋", "r": "三樣深色蔬菜、一份豆腐、不淋肉燥"}
+        },
+        "high": {
+            "早": {"n": "蛋餅+無糖豆漿", "d": "400 kcal / 15g 蛋", "r": "起司蛋餅或蔬菜蛋餅、400ml 無糖豆漿"},
+            "午": {"n": "素食水餃餐", "d": "550 kcal / 18g 蛋", "r": "素水餃 10 顆、燙青菜一份、皮蛋豆腐"},
+            "晚": {"n": "潤餅(微糖)", "d": "450 kcal / 15g 蛋", "r": "多加高麗菜與豆干、不加肥肉、花生粉減半"}
+        }
+    }
+}
+
+# 推薦邏輯
+menu_type = "low" if (remaining < 400 and daily_target > 0) else "high"
+# 防呆機制：確保 user 的素食類型有在菜單裡，沒有就預設全素
+safe_diet_type = current_diet_type if current_diet_type in menus else "全素 (Vegan)"
+current_menu = menus[safe_diet_type][menu_type]
+
+if menu_type == "low":
+    st.info(f"💡 今日額度較少，推薦 **{safe_diet_type} - 輕盈低卡餐**：")
+else:
+    st.success(f"💡 今日熱量充足，推薦 **{safe_diet_type} - 營養均衡餐**：")
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.markdown("#### ☀️ 早餐")
+    st.write(f"**{current_menu['早']['n']}**")
+    st.caption(current_menu['早']['d'])
+    with st.expander("作法"): st.write(current_menu['早']['r'])
+
+with col2:
+    st.markdown("#### 🍱 午餐")
+    st.write(f"**{current_menu['午']['n']}**")
+    st.caption(current_menu['午']['d'])
+    with st.expander("作法"): st.write(current_menu['午']['r'])
+
+with col3:
+    st.markdown("#### 🌙 晚餐")
+    st.write(f"**{current_menu['晚']['n']}**")
+    st.caption(current_menu['晚']['d'])
+    with st.expander("作法"): st.write(current_menu['晚']['r'])
+
+st.divider()
+st.caption("Note: 素食分類與食譜僅供參考，請依個人過敏源調整。")
